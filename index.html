@@ -166,15 +166,18 @@
       this.update(0, 1);
       return this._div;
     };
-    legend.update = function(minVal, maxVal) {
+    legend.update = function(minVal, maxVal, isCampamentosMode = false) {
+      const title = isCampamentosMode ? 'Familias por campamento' : 'Cantidad de campamentos';
+      const colorNote = isCampamentosMode ? 'Color más rojo = más familias' : 'Color más oscuro = mayor cantidad';
+      
       this._div.innerHTML = `
-        <div><strong>Cantidad de campamentos</strong></div>
+        <div><strong>${title}</strong></div>
         <div class='scale'>
           <span><strong>${minVal}</strong></span>
-          <div class='bar'></div>
+          <div class='bar' style='${isCampamentosMode ? "background: linear-gradient(to right, #10b981, #fbbf24, #f97316, #ef4444, #b91c1c);" : ""}'></div>
           <span><strong>${maxVal}</strong></span>
         </div>
-        <small>Color más oscuro = mayor cantidad</small>
+        <small>${colorNote}</small>
       `;
     };
     legend.addTo(map);
@@ -219,6 +222,14 @@
 
     // Capa adicional para mostrar solo los bordes de regiones
     let regionesBordesLayer = null;
+    let campamentosStats = { min: 0, max: 0 }; // Stats de familias en campamentos
+
+    // Función para crear escala de color para campamentos (basada en familias)
+    function makeCampamentosColorScale(minVal, maxVal) {
+      // Colores más saturados y vibrantes para destacar sobre el mapa
+      const interp = d3.interpolateRgbBasis(["#10b981", "#fbbf24", "#f97316", "#ef4444", "#b91c1c"]);
+      return v => interp(Math.max(0, Math.min(1, (v - minVal) / Math.max(1, maxVal - minVal))));
+    }
 
     // Función para alternar vista de campamentos
     document.getElementById('toggleCampamentos').onclick = function() {
@@ -237,12 +248,32 @@
         // Mostrar campamentos (sin cambiar zoom/posición)
         if (!campamentosLayer) {
           fetch('data/campamentos_poligonos.geojson').then(r => r.json()).then(data => {
+            // Calcular estadísticas de familias
+            const familiasValues = [];
+            data.features.forEach(f => {
+              const desc = f.properties.Description || '';
+              const famMatch = desc.match(/<td>Familias<\/td>\s*<td>(\d+)<\/td>/i);
+              if (famMatch) {
+                const fam = parseInt(famMatch[1]);
+                familiasValues.push(fam);
+                f.properties.familias_num = fam; // Guardar para uso posterior
+              }
+            });
+            
+            campamentosStats.min = d3.min(familiasValues) || 0;
+            campamentosStats.max = d3.max(familiasValues) || 100;
+            
+            const colorScale = makeCampamentosColorScale(campamentosStats.min, campamentosStats.max);
+            
             campamentosLayer = L.geoJSON(data, {
-              style: {
-                color: '#dc2626',
-                weight: 1.5,
-                fillColor: '#ef4444',
-                fillOpacity: 0.6
+              style: f => {
+                const familias = f.properties.familias_num || 0;
+                return {
+                  color: '#1f2937',
+                  weight: 2,
+                  fillColor: colorScale(familias),
+                  fillOpacity: 0.75
+                };
               },
               onEachFeature: (f, layer) => {
                 const name = f.properties.Name || f.properties.name || 'Campamento';
@@ -285,23 +316,32 @@
                   className: 'campamento-tooltip'
                 });
                 
+                let hoverTimeout;
                 layer.on('mouseover', () => {
-                  layer.setStyle({ weight: 3, fillOpacity: 0.8 });
+                  clearTimeout(hoverTimeout);
+                  layer.setStyle({ weight: 3.5, fillOpacity: 0.95, color: '#000' });
+                  // Sonificar con escala de familias
+                  const famNum = f.properties.familias_num || 0;
+                  hoverTimeout = setTimeout(() => playTone(famNum, campamentosStats.min, campamentosStats.max), 50);
                 });
                 layer.on('mouseout', () => {
-                  layer.setStyle({ weight: 1.5, fillOpacity: 0.6 });
+                  clearTimeout(hoverTimeout);
+                  layer.setStyle({ weight: 2, fillOpacity: 0.75, color: '#1f2937' });
                 });
               }
             }).addTo(map);
+            
+            // Actualizar leyenda para mostrar escala de familias
+            legend.update(campamentosStats.min, campamentosStats.max, true);
+            nivelLabel.textContent = 'Polígonos de Campamentos (por familias)';
             // No hacer fitBounds, mantener zoom actual
           });
         } else {
           campamentosLayer.addTo(map);
+          legend.update(campamentosStats.min, campamentosStats.max, true);
+          nivelLabel.textContent = 'Polígonos de Campamentos (por familias)';
           // No hacer fitBounds, mantener zoom actual
         }
-        
-        nivelLabel.textContent = 'Polígonos de Campamentos';
-        legend.getContainer().style.display = 'none';
         
       } else {
         btn.innerHTML = '📍 Mostrar campamentos';
@@ -310,8 +350,7 @@
         // Ocultar campamentos
         if (campamentosLayer) campamentosLayer.remove();
         
-        // Restaurar mapa coroplético
-        legend.getContainer().style.display = 'block';
+        // Restaurar mapa coroplético con leyenda de campamentos totales
         updateLevel();
       }
     };
