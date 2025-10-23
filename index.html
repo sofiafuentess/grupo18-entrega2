@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Campamentos en Chile — Regiones → Comunas (E2)</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <style>
+    html, body { height: 100%; margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    #map { height: 100%; }
+    .legend { background: white; padding: 10px 12px; border-radius: 8px; line-height: 1.4; box-shadow: 0 2px 8px rgba(0,0,0,.15); min-width: 180px; }
+    .legend .scale { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+    .legend .bar { width: 140px; height: 10px; background: linear-gradient(to right, #fff5f0, #fb6a4a, #67000d); border-radius: 6px; }
+    .legend small { color: #666; font-size: 11px; }
+    .info { background: white; padding: 8px 10px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,.15); }
+    .floating-ui { position: absolute; top: 80px; right: 12px; display: flex; gap: 8px; z-index: 1000; flex-wrap: wrap; max-width: 400px; flex-direction: column; align-items: flex-end; }
+    .btn { background:#111827; color:white; border:0; padding:8px 10px; border-radius:10px; cursor:pointer; box-shadow: 0 1px 5px rgba(0,0,0,.2); font-size: 13px; white-space: nowrap; }
+    .btn.secondary { background:#374151; }
+    .btn:hover { opacity: 0.9; }
+    .metadata { position:absolute; bottom:12px; right:12px; background:rgba(255,255,255,.95); padding:8px 10px; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.15); font-size: 11px; color: #666; }
+    .notice { position:absolute; bottom:12px; left:12px; background:rgba(255,255,255,.95); padding:8px 10px; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.15); font-size: 12px; }
+    .leaflet-tooltip { 
+      font-size: 13px !important; 
+      font-weight: 500 !important;
+      background: rgba(17, 24, 39, 0.95) !important;
+      color: white !important;
+      border: none !important;
+      border-radius: 6px !important;
+      padding: 6px 10px !important;
+      box-shadow: 0 2px 8px rgba(0,0,0,.3) !important;
+    }
+    .campamento-tooltip {
+      background: rgba(255, 255, 255, 0.98) !important;
+      color: #111827 !important;
+      border: 2px solid #dc2626 !important;
+      border-radius: 8px !important;
+      padding: 8px 12px !important;
+      box-shadow: 0 4px 12px rgba(0,0,0,.2) !important;
+      font-size: 12px !important;
+      min-width: 180px;
+    }
+    .campamento-tooltip::before {
+      border-top-color: #dc2626 !important;
+    }
+  </style>
+</head>
+<body>
+  <div class="floating-ui">
+    <button id="resetBtn" class="btn">Vista nacional</button>
+    <button id="toggleSound" class="btn secondary">&#128263; Sonido: OFF</button>
+    <button id="toggleCampamentos" class="btn secondary">📍 Mostrar campamentos</button>
+  </div>
+  
+  <div id="map"></div>
+  
+  <div class="notice">Nivel: <span id="nivelLabel">Regiones</span> · Zoom ≥ 8 para ver Comunas con límites regionales</div>
+  
+  <div class="metadata">
+    <strong>Fuente:</strong> Catastro Nacional de Campamentos (CNC) 2024-2025<br>
+    <strong>Actualización:</strong> Octubre 2025
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <script src="https://unpkg.com/tone@14.8.49/build/Tone.js"></script>
+
+  <script>
+    const MAP_CENTER = [-35.6751, -71.5430]; // Chile
+    const ZOOM_START = 5.5;
+    const ZOOM_COMMUNE = 8; // comunas visibles con más zoom
+
+    const map = L.map('map', { preferCanvas: true, zoomSnap: 0.5 }).setView(MAP_CENTER, ZOOM_START);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 18,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    const nivelLabel = document.getElementById('nivelLabel');
+    document.getElementById('resetBtn').onclick = () => map.setView(MAP_CENTER, ZOOM_START);
+
+    let soundOn = false; // Sonido desactivado por defecto
+    let audioStarted = false;
+    
+    // Sistema de sonificación multi-dimensional
+    const reverb = new Tone.Reverb({ decay: 1.5, wet: 0.3 }).toDestination();
+    const filter = new Tone.Filter({ frequency: 2000, type: 'lowpass' }).connect(reverb);
+    
+    const synth = new Tone.PolySynth(Tone.Synth, {
+      oscillator: { type: 'triangle' },
+      envelope: {
+        attack: 0.005,
+        decay: 0.1,
+        sustain: 0.3,
+        release: 0.15
+      },
+      volume: -12
+    }).connect(filter);
+    
+    const toggleButton = document.getElementById('toggleSound');
+    
+    // Toggle del sonido con clic
+    toggleButton.onclick = async () => {
+      if (!audioStarted) {
+        await Tone.start();
+        audioStarted = true;
+      }
+      soundOn = !soundOn;
+      toggleButton.innerHTML = soundOn ? '&#128266; Sonido: ON' : '&#128263; Sonido: OFF';
+    };
+
+    function playTone(value, minV, maxV) {
+      if (!soundOn || !audioStarted) return;
+      
+      // Caso especial para 0 campamentos: sonido distintivo
+      if (value === 0) {
+        // Sonido grave y apagado para "ausencia"
+        filter.frequency.value = 400;
+        synth.volume.value = -22;
+        synth.triggerAttackRelease(110, '0.1'); // La2 muy grave
+        return;
+      }
+      
+      const v = Math.max(minV, Math.min(value, maxV));
+      const t = (v - minV) / Math.max(1, (maxV - minV));
+      
+      // Escala pentatónica EXTENDIDA para mayor rango dinámico
+      // A3, C4, D4, E4, G4, A4, C5, D5, E5
+      const pentatonic = [220, 261.63, 293.66, 329.63, 392.00, 440.00, 523.25, 587.33, 659.25];
+      const noteIndex = Math.floor(t * (pentatonic.length - 1));
+      const freq = pentatonic[noteIndex];
+      
+      // 1. TONO: Más campamentos = nota más aguda (EXTENDIDO)
+      
+      // 2. VOLUMEN: Curva exponencial para mejor percepción
+      // Valores bajos se escuchan mejor
+      const volumeCurve = Math.pow(t, 0.5); // Curva de raíz cuadrada
+      const volume = -18 + (volumeCurve * 12); // De -18dB a -6dB
+      synth.volume.value = volume;
+      
+      // 3. BRILLO (filtro): Curva suavizada
+      const brightnessCurve = Math.pow(t, 0.7);
+      filter.frequency.value = 1000 + (brightnessCurve * 2500); // De 1000Hz a 3500Hz
+      
+      // 4. COMPLEJIDAD: Umbrales ajustados para valores pequeños
+      if (t > 0.65) {
+        // Muchos campamentos: acorde de 3 notas (dramático)
+        const chord = [freq, freq * 1.25, freq * 1.5];
+        synth.triggerAttackRelease(chord, '0.25');
+      } else if (t > 0.25) {
+        // Cantidad baja-media: 2 notas (más perceptible)
+        const chord = [freq, freq * 1.5];
+        synth.triggerAttackRelease(chord, '0.2');
+      } else {
+        // Muy pocos campamentos: una nota con duración ligeramente mayor
+        synth.triggerAttackRelease(freq, '0.18');
+      }
+    }
+
+    let regionesLayer, comunasLayer, regionesStats, comunasStats;
+    let campamentosLayer = null;
+    let campamentosVisible = false;
+
+    const legend = L.control({ position: 'bottomleft' });
+    legend.onAdd = function() {
+      this._div = L.DomUtil.create('div', 'legend');
+      this.update(0, 1);
+      return this._div;
+    };
+    legend.update = function(minVal, maxVal) {
+      this._div.innerHTML = `
+        <div><strong>Cantidad de campamentos</strong></div>
+        <div class='scale'>
+          <span><strong>${minVal}</strong></span>
+          <div class='bar'></div>
+          <span><strong>${maxVal}</strong></span>
+        </div>
+        <small>Color más oscuro = mayor cantidad</small>
+      `;
+    };
+    legend.addTo(map);
+
+    const info = L.control({ position: 'topright' });
+    info.onAdd = function() {
+      const div = L.DomUtil.create('div', 'info');
+      div.innerHTML = 'Pasa el cursor sobre una región/comuna';
+      return div;
+    };
+    info.addTo(map);
+
+    function makeColorScale(minVal, maxVal) {
+      const interp = d3.interpolateRgbBasis(["#fff5f0", "#fb6a4a", "#67000d"]);
+      return v => interp(Math.max(0, Math.min(1, (v - minVal) / Math.max(1, maxVal - minVal))));
+    }
+
+    function renderLayer(geojson, stats) {
+      const colorScale = makeColorScale(stats.min, stats.max);
+      return L.geoJSON(geojson, {
+        style: f => ({ color: '#999', weight: 0.5, fillColor: colorScale(f.properties.campamentos || 0), fillOpacity: 0.85 }),
+        onEachFeature: (f, layer) => {
+          const name = f.properties.Comuna || f.properties.Region || f.properties.NOM_COM || f.properties.NOM_REG || 'Sin nombre';
+          const val = f.properties.campamentos || 0;
+          layer.bindTooltip(`${name}<br><b>${val}</b> campamentos`, { direction: 'auto', sticky: true });
+          
+          let hoverTimeout;
+          layer.on('mouseover', () => {
+            clearTimeout(hoverTimeout);
+            info.getContainer().innerHTML = `<b>${name}</b><br>Campamentos: ${val}`;
+            layer.setStyle({ weight: 2.5, color: '#000' });
+            // Debounce del sonido para evitar saturación
+            hoverTimeout = setTimeout(() => playTone(val, stats.min, stats.max), 50);
+          });
+          layer.on('mouseout', () => {
+            clearTimeout(hoverTimeout);
+            layer.setStyle({ weight: 0.5, color: '#999' });
+          });
+        }
+      });
+    }
+
+    // Capa adicional para mostrar solo los bordes de regiones
+    let regionesBordesLayer = null;
+
+    // Función para alternar vista de campamentos
+    document.getElementById('toggleCampamentos').onclick = function() {
+      campamentosVisible = !campamentosVisible;
+      const btn = this;
+      
+      if (campamentosVisible) {
+        btn.innerHTML = '🗺️ Mostrar mapa';
+        btn.classList.remove('secondary');
+        
+        // Ocultar capas coroplético
+        if (regionesLayer) regionesLayer.remove();
+        if (comunasLayer) comunasLayer.remove();
+        if (regionesBordesLayer) regionesBordesLayer.remove();
+        
+        // Mostrar campamentos (sin cambiar zoom/posición)
+        if (!campamentosLayer) {
+          fetch('data/campamentos_poligonos.geojson').then(r => r.json()).then(data => {
+            campamentosLayer = L.geoJSON(data, {
+              style: {
+                color: '#dc2626',
+                weight: 1.5,
+                fillColor: '#ef4444',
+                fillOpacity: 0.6
+              },
+              onEachFeature: (f, layer) => {
+                const name = f.properties.Name || f.properties.name || 'Campamento';
+                const desc = f.properties.Description || f.properties.description || '';
+                
+                // Parsear HTML para extraer datos
+                let familias = 'N/A';
+                let nna = 'N/A'; // Niños, niñas y adolescentes
+                
+                if (desc) {
+                  const famMatch = desc.match(/<td>Familias<\/td>\s*<td>(\d+)<\/td>/i);
+                  const nnaMatch = desc.match(/<td>Niños, niñas y adolescentes<\/td>\s*<td>(\d+)<\/td>/i);
+                  
+                  if (famMatch) familias = famMatch[1];
+                  if (nnaMatch) nna = nnaMatch[1];
+                }
+                
+                // Crear tooltip bonito
+                const tooltipContent = `
+                  <div style="padding: 2px 0;">
+                    <div style="font-size: 14px; font-weight: 600; margin-bottom: 6px; color: #111827; border-bottom: 2px solid #dc2626; padding-bottom: 4px;">
+                      ${name}
+                    </div>
+                    <div style="font-size: 12px; line-height: 1.6;">
+                      <div style="display: flex; justify-content: space-between; margin: 2px 0;">
+                        <span style="color: #6b7280;">👨‍👩‍👧 Familias:</span>
+                        <span style="font-weight: 600; color: #111827;">${familias}</span>
+                      </div>
+                      <div style="display: flex; justify-content: space-between; margin: 2px 0;">
+                        <span style="color: #6b7280;">👶 Niños y Adolescentes:</span>
+                        <span style="font-weight: 600; color: #111827;">${nna}</span>
+                      </div>
+                    </div>
+                  </div>
+                `;
+                
+                layer.bindTooltip(tooltipContent, { 
+                  direction: 'auto', 
+                  sticky: true,
+                  className: 'campamento-tooltip'
+                });
+                
+                layer.on('mouseover', () => {
+                  layer.setStyle({ weight: 3, fillOpacity: 0.8 });
+                });
+                layer.on('mouseout', () => {
+                  layer.setStyle({ weight: 1.5, fillOpacity: 0.6 });
+                });
+              }
+            }).addTo(map);
+            // No hacer fitBounds, mantener zoom actual
+          });
+        } else {
+          campamentosLayer.addTo(map);
+          // No hacer fitBounds, mantener zoom actual
+        }
+        
+        nivelLabel.textContent = 'Polígonos de Campamentos';
+        legend.getContainer().style.display = 'none';
+        
+      } else {
+        btn.innerHTML = '📍 Mostrar campamentos';
+        btn.classList.add('secondary');
+        
+        // Ocultar campamentos
+        if (campamentosLayer) campamentosLayer.remove();
+        
+        // Restaurar mapa coroplético
+        legend.getContainer().style.display = 'block';
+        updateLevel();
+      }
+    };
+
+    function updateLevel() {
+      // Si estamos en modo campamentos, no hacer nada
+      if (campamentosVisible) return;
+      
+      const showComunas = map.getZoom() >= ZOOM_COMMUNE;
+      nivelLabel.textContent = showComunas ? 'Comunas + Regiones' : 'Regiones';
+      
+      if (showComunas) {
+        // Mostrar comunas con regiones como borde
+        if (regionesLayer) regionesLayer.remove();
+        if (comunasLayer && !map.hasLayer(comunasLayer)) comunasLayer.addTo(map);
+        if (regionesBordesLayer && !map.hasLayer(regionesBordesLayer)) {
+          regionesBordesLayer.addTo(map);
+          regionesBordesLayer.bringToFront();
+        }
+        legend.update(comunasStats.min, comunasStats.max);
+      } else {
+        // Solo regiones
+        if (comunasLayer) comunasLayer.remove();
+        if (regionesBordesLayer) regionesBordesLayer.remove();
+        if (regionesLayer && !map.hasLayer(regionesLayer)) regionesLayer.addTo(map);
+        legend.update(regionesStats.min, regionesStats.max);
+      }
+    }
+    map.on('zoomend', updateLevel);
+
+    Promise.all([
+      fetch('data/regiones.geojson').then(r => r.json()),
+      fetch('data/comunas.geojson').then(r => r.json())
+    ]).then(([regiones, comunas]) => {
+      const regVals = regiones.features.map(f => f.properties.campamentos || 0);
+      const comVals = comunas.features.map(f => f.properties.campamentos || 0);
+      regionesStats = { min: d3.min(regVals), max: d3.max(regVals) };
+      comunasStats = { min: d3.min(comVals), max: d3.max(comVals) };
+
+      regionesLayer = renderLayer(regiones, regionesStats);
+      comunasLayer = renderLayer(comunas, comunasStats);
+      
+      // Capa de solo bordes de regiones (para superponer sobre comunas)
+      regionesBordesLayer = L.geoJSON(regiones, {
+        style: {
+          color: '#111827',
+          weight: 2,
+          fillOpacity: 0,
+          opacity: 0.7
+        },
+        interactive: false // No interfiere con eventos de mouse
+      });
+
+      regionesLayer.addTo(map);
+      legend.update(regionesStats.min, regionesStats.max);
+      updateLevel();
+    });
+  </script>
+</body>
+</html>
